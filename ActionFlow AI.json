@@ -1,0 +1,306 @@
+{
+  "id": "e5f6a7b8-c9d0-4e1f-8a2b-3c4d5e6f7081",
+  "name": "ActionFlow AI - Meeting Notes & Action Items",
+  "nodes": [
+    {
+      "id": "meeting-sticky",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [0, -500],
+      "parameters": {
+        "width": 820,
+        "height": 240,
+        "content": "## ActionFlow AI\n\nSend a meeting transcript via webhook. GPT-5.6 Terra produces a summary, key decisions, risks, and owner-assigned action items. Everything is logged to Google Sheets and emailed to the team.\n\nPOST /actionflow-meeting-notes with JSON: { transcript, meeting_title, organizer, attendees }"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "meeting-webhook",
+      "name": "Receive Meeting Transcript",
+      "type": "n8n-nodes-base.webhook",
+      "position": [-200, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "actionflow-meeting-notes",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "meeting-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "position": [0, 0],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst transcript = body.transcript || body.text || '';\nif (!transcript || transcript.trim().length < 20) {\n  throw new Error('A meeting transcript of at least 20 characters is required.');\n}\nconst attendees = Array.isArray(body.attendees)\n  ? body.attendees.map(String).join(', ')\n  : String(body.attendees || body.attendee_list || '');\nreturn [{\n  json: {\n    transcript: transcript.trim(),\n    meetingTitle: body.meeting_title || body.title || 'Untitled meeting',\n    organizer: body.organizer || '',\n    meetingDate: body.meeting_date || new Date().toISOString().slice(0, 10),\n    attendees,\n    receivedAt: new Date().toISOString(),\n    meetingId: 'MTG-' + Date.now().toString(36).toUpperCase()\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "meeting-model",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "position": [200, -240],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.6-terra"
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "typeVersion": 1.2
+    },
+    {
+      "id": "meeting-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "position": [400, -240],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"key_decisions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"action_items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"owner\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"due_date\":{\"type\":[\"string\",\"null\"]},\"priority\":{\"type\":\"string\",\"enum\":[\"low\",\"medium\",\"high\",\"urgent\"]}},\"required\":[\"owner\",\"task\",\"priority\"]}},\"risks\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"suggested_followup\":{\"type\":[\"object\",\"null\"],\"properties\":{\"title\":{\"type\":\"string\"},\"suggested_date\":{\"type\":[\"string\",\"null\"]},\"attendees\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}},\"required\":[\"summary\",\"key_decisions\",\"action_items\",\"risks\",\"suggested_followup\"]}"
+      },
+      "typeVersion": 1.2
+    },
+    {
+      "id": "meeting-chain",
+      "name": "Analyze Meeting",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [200, 0],
+      "parameters": {
+        "text": "=MEETING: {{ $json.meetingTitle }}\nDATE: {{ $json.meetingDate }}\nORGANIZER: {{ $json.organizer }}\nATTENDEES: {{ $json.attendees }}\n\nTRANSCRIPT:\n{{ $json.transcript }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are an executive meeting assistant. Produce a concise summary, list key decisions, extract every action item with the owner named in the transcript and a priority, list risks and blockers, and suggest a follow-up meeting only if the transcript calls for one. Assign owners only from names mentioned in the transcript. Never invent attendees or deadlines. Return valid JSON only."
+            }
+          ]
+        },
+        "promptType": "define",
+        "hasOutputParser": true
+      },
+      "typeVersion": 1.5
+    },
+    {
+      "id": "meeting-normalize",
+      "name": "Normalize Meeting Output",
+      "type": "n8n-nodes-base.code",
+      "position": [400, 0],
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst raw = item.output || item;\nconst str = (v) => v === null || v === undefined ? '' : String(v);\nconst list = (v) => Array.isArray(v) ? v.map(str).join(' | ') : str(v);\nconst actionItems = Array.isArray(raw.action_items) ? raw.action_items.map((a) => ({\n  owner: str(a.owner),\n  task: str(a.task),\n  due_date: str(a.due_date),\n  priority: str(a.priority) || 'medium'\n})) : [];\nreturn [{\n  json: {\n    ...item,\n    summary: str(raw.summary),\n    key_decisions: list(raw.key_decisions),\n    risks: list(raw.risks),\n    action_items: actionItems,\n    actionItemsText: actionItems.map((a) => `${a.owner}: ${a.task} (${a.priority}, due ${a.due_date || 'TBD'})`).join('\\n'),\n    suggested_followup: JSON.stringify(raw.suggested_followup || {})\n  }\n}];"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "meeting-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [600, -160],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, meetingId: $json.meetingId, summary: $json.summary, actionItems: $json.action_items }) }}"
+      },
+      "typeVersion": 1.1
+    },
+    {
+      "id": "meeting-summary-sheet",
+      "name": "Log Meeting Summary",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [600, -40],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MEETING_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Meetings",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Meeting ID": "={{ $json.meetingId }}",
+            "Date": "={{ $json.meetingDate }}",
+            "Title": "={{ $json.meetingTitle }}",
+            "Organizer": "={{ $json.organizer }}",
+            "Attendees": "={{ $json.attendees }}",
+            "Summary": "={{ $json.summary }}",
+            "Key Decisions": "={{ $json.key_decisions }}",
+            "Risks": "={{ $json.risks }}",
+            "Suggested Follow-up": "={{ $json.suggested_followup }}",
+            "Received At": "={{ $json.receivedAt }}"
+          }
+        },
+        "options": {}
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "meeting-split",
+      "name": "Split Action Items",
+      "type": "n8n-nodes-base.splitOut",
+      "position": [600, 80],
+      "parameters": {
+        "options": {},
+        "fieldToSplitOut": "action_items"
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "meeting-action-sheet",
+      "name": "Log Action Items",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [800, 80],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MEETING_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Action Items",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Meeting ID": "={{ $json.meetingId }}",
+            "Meeting Title": "={{ $json.meetingTitle }}",
+            "Owner": "={{ $json.owner }}",
+            "Task": "={{ $json.task }}",
+            "Due Date": "={{ $json.due_date }}",
+            "Priority": "={{ $json.priority }}",
+            "Status": "=Open"
+          }
+        },
+        "options": {}
+      },
+      "typeVersion": 4.5
+    },
+    {
+      "id": "meeting-email",
+      "name": "Email Action Items",
+      "type": "n8n-nodes-base.gmail",
+      "position": [600, 200],
+      "parameters": {
+        "sendTo": "={{ $env.MEETING_EMAIL_TO || 'team@example.com' }}",
+        "subject": "=Action items: {{ $json.meetingTitle }}",
+        "message": "={{ $json.summary }}\n\nDECISIONS:\n{{ $json.key_decisions }}\n\nACTION ITEMS:\n{{ $json.actionItemsText }}\n\nRISKS:\n{{ $json.risks }}",
+        "options": {}
+      },
+      "typeVersion": 2.1
+    }
+  ],
+  "connections": {
+    "Receive Meeting Transcript": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Analyze Meeting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Analyze Meeting",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Analyze Meeting",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Meeting": {
+      "main": [
+        [
+          {
+            "node": "Normalize Meeting Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Meeting Output": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Meeting Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Action Items",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Action Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Action Items": {
+      "main": [
+        [
+          {
+            "node": "Log Action Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "v1-actionflow-ai",
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
