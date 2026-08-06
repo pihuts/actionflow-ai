@@ -2,7 +2,7 @@
 
 An n8n workflow that turns a meeting transcript into a summary, decisions, risks, and tracked action items.
 
-![ActionFlow AI workflow](screenshots/ActionFlow%20AI.png)
+![ActionFlow AI opened in n8n](screenshots/n8n-editor.png)
 
 ## What it does
 
