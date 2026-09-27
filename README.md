@@ -1,56 +1,53 @@
 # ActionFlow AI
 
-When a meeting webhook receives a transcript, record the meeting and action items, send a digest, and stop.
+When an authenticated webhook receives a meeting transcript, save its summary and action items, send a team digest, and stop.
 
-## Production operations
+![ActionFlow workflow in n8n](screenshots/n8n-overview.png)
 
-**Purpose:** When a meeting webhook receives a transcript, record the meeting and action items, send a digest, and stop.
+These images show a local n8n editor. Red icons mean credentials still need to be connected on your own instance.
 
-- **Scope:** Webhook transcript, Meetings and Action Items tabs, OpenAI, and configured team inbox. No calendar edits or task assignment outside Sheets.
-- **Success:** One Meetings row and action rows keyed by meeting ID and task; webhook returns accepted after the meeting row.
-- **Inputs:** Webhook transcript, title, date, organizer, attendees and request_id; OpenAI analysis; environment destinations.
-- **Philippine use:** Default date and schedule use Asia/Manila. Dates inferred by AI require owner review; no deadline is invented from a vague reference.
+[Webhook and checks](screenshots/n8n-start.png) · [Sheet and digest steps](screenshots/n8n-finish.png)
 
-### Configure and run
+## What it does
 
-1. Import this workflow and `Failure Alert.json` into n8n. Connect OpenAI, Google Sheets and Gmail credentials. For a webhook workflow, also connect a Header Auth credential and configure the caller to send it. Use a dedicated Google account with access only to the named spreadsheet and mail account.
-2. Create the tabs and exact headers: Meetings: Meeting ID, Run ID, Date, Title, Organizer, Attendees, Summary, Key Decisions, Risks, Suggested Follow-up, Received At. Action Items: Action Key, Meeting ID, Meeting Title, Owner, Task, Due Date, Priority, Status.
-3. Set required environment values: `MEETING_SHEET_ID, MEETING_EMAIL_TO`. For CareerCompass, use `JOBHUNT_SEARCH_URL=https://hn.algolia.com/api/v1/search_by_date?query=%22Ask%20HN%3A%20Who%20is%20hiring%22&tags=story&hitsPerPage=30` and `JOBHUNT_ITEM_API_BASE=https://hacker-news.firebaseio.com/v0/item` as starting URLs. Set `ACTIONFLOW_ALERT_EMAIL_TO` to the operator's real inbox.
-4. Optional config: None. Set `ACTIONFLOW_ENABLED=true` to enable runs. Dry run is on unless `ACTIONFLOW_DRY_RUN=false` is explicitly set. The kill switch is `ACTIONFLOW_ENABLED=false`; deactivate the workflow too for an immediate stop.
-   On self-hosted n8n, set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` or Code nodes cannot read these values. Run these workflows on a dedicated instance; keep API secrets in n8n credentials and expose only workflow config through environment values.
-   Set `N8N_CONCURRENCY_PRODUCTION_LIMIT=1` on that dedicated instance to serialize Sheet lookups and writes.
-5. Open this workflow's n8n Settings and select the imported Failure Alert workflow as **Error Workflow**. Send its Gmail node from an account the operator monitors. Keep execution retention appropriate for sensitive data.
-6. Run `python smoke_test.py` after every edit; GitHub Actions runs it on push and pull request. With dry run on, run the n8n workflow once and confirm no Google/AI/Gmail nodes executed. Then use a test sheet, test inbox, and representative input before setting `ACTIONFLOW_DRY_RUN=false`.
+The caller sends a request_id and transcript to actionflow-meeting-notes. The workflow checks the input, asks OpenAI for a summary and actions, then writes to the Meetings and Action Items tabs. It emails the team inbox. Dates use Asia/Manila. A person must confirm owners and deadlines; a vague date should not become a made-up deadline. The workflow does not change calendars or assign work outside Sheets.
 
-Event: authenticated POST to actionflow-meeting-notes. Owner: meeting organizer/team operations. If the instance is offline, scheduled events are missed and webhook callers must retry with the same request ID. Manually replay missed scheduled runs after recovery. Review this workflow each quarter; retire it when its owner, input source, or business process no longer exists.
+Success means a Meetings row keyed by Meeting ID, action rows keyed by meeting and task, and a digest in the n8n execution. The webhook can return accepted after the meeting row but before every action row or email finishes. The meeting organizer or team operations owns this workflow.
 
-### Reliability, audit, and failure response
+## Set up
 
-- **Reruns:** Caller supplies stable request_id. The Meetings lookup stops repeated processing; each action row also upserts by meeting ID and task. Google Sheets lookup plus upsert is sequential idempotency; Sheets has no atomic uniqueness constraint, so concurrent runs can still duplicate rows. Keep one active run per workflow and reconcile after interruptions.
-- **Partial failure:** The webhook's accepted status means the meeting row exists; later action rows or team email can fail. Check the execution and both tabs before replay. Never blindly retry a Gmail node after a timeout.
-- **Timeouts/retries:** The workflow has a 300 second execution limit; HTTP calls have 15 second timeouts and three attempts with a two second wait. AI calls use a 30 second timeout. n8n's generic retry also retries some permanent HTTP errors, so disable that per node if your source returns persistent 4xx responses. Writes are not automatically retried because an ambiguous timeout can follow a successful write.
-- **Audit:** n8n execution history and JSON console logs include timestamp, execution ID, and result without raw customer content. Sheet rows carry business keys and run IDs where available. Inspect failed executions and the `Failure Alert` email. The alert workflow depends on n8n being up; use an external uptime monitor for instance outages.
-- **Security:** Store OAuth/API secrets in n8n credentials, not JSON or git. Protect webhook URLs with authenticated ingress and rate limits. Restrict who can view execution history, Sheets, and Gmail. Do not feed sensitive customer or financial data to OpenAI without your organization's approval and retention policy.
-- **Exit status/health:** `python smoke_test.py` exits 0 on pass and nonzero on failure. In n8n, the execution status is the scheduler signal; monitor failed and missing scheduled executions. The latest timestamp in the relevant sheet is the simple status indicator.
+1. On self-hosted n8n, import ActionFlow AI.json and Failure Alert.json. Connect OpenAI, Google Sheets, Gmail, and a Header Auth credential. Require the caller to send that header over HTTPS. Restrict the Google account to the team sheet and mailbox.
+2. Make a Meetings tab with: Meeting ID, Run ID, Date, Title, Organizer, Attendees, Summary, Key Decisions, Risks, Suggested Follow-up, Received At. Make an Action Items tab with: Action Key, Meeting ID, Meeting Title, Owner, Task, Due Date, Priority, Status.
+3. Set MEETING_SHEET_ID, MEETING_EMAIL_TO, and ACTIONFLOW_ALERT_EMAIL_TO in the server environment. Keep API keys in n8n credentials. Set N8N_BLOCK_ENV_ACCESS_IN_NODE=false on this dedicated instance so Code nodes can read workflow settings.
+4. In the main workflow's n8n Settings, choose Failure Alert as its Error Workflow. Connect its Gmail node and test delivery to the team operator. Rate-limit the webhook at ingress. Set N8N_CONCURRENCY_PRODUCTION_LIMIT=1 to reduce overlapping production runs; manual runs can still overlap.
 
-### Go-live preflight
+ACTIONFLOW_ENABLED=true allows a run. Dry run is on unless ACTIONFLOW_DRY_RUN=false. Dry run stops before OpenAI, Sheets, and Gmail. Set ACTIONFLOW_ENABLED=false and deactivate the workflow to stop new requests.
 
-- [ ] Operator and failure inbox assigned; Error Workflow selected and alert tested.
-- [ ] Dry run checked on test input; no live side effect occurred.
-- [ ] Required variables and least-privilege credentials configured; no secrets in the export.
-- [ ] Same request/lead/invoice rerun checked in a test sheet; no second mail or draft.
-- [ ] Network timeout and failure alert checked; partial-write recovery rehearsed.
-- [ ] `ACTIONFLOW_ENABLED=false` demonstrated as the kill switch.
+## Test before using real meetings
 
-**Production gate:** Offline smoke tests do not prove n8n import compatibility or live Google/Gmail/OpenAI behavior. Complete the test-account run above and review the Sheets concurrency and ambiguous-email limits before activating on real data.
+1. Run python smoke_test.py after edits. It exits nonzero on failure. GitHub Actions runs it on pushes and pull requests.
+2. Enable the flag and leave dry run on. POST a sample request with Header Auth; confirm dry_run and no external calls.
+3. Use a test sheet and inbox, set ACTIONFLOW_DRY_RUN=false, and POST a sample with a stable request_id. Check both tabs and Gmail. POST it again; check that no second digest appears.
+4. Test an empty transcript, a meeting with no action items, and Failure Alert delivery.
 
-Test call after connecting Header Auth (use the token and URL from your own instance):
+Example request after you set your own URL and Header Auth token:
 
-```bash
-curl -X POST https://YOUR-N8N/webhook/actionflow-meeting-notes \
-  -H 'Content-Type: application/json' \
-  -H 'X-Workflow-Key: YOUR-HEADER-AUTH-TOKEN' \
-  -d '{"request_id": "meeting_123", "transcript": "Alice: Bob, please finish the report by Friday."}'
-```
+    curl -X POST https://YOUR-N8N/webhook/actionflow-meeting-notes -H 'Content-Type: application/json' -H 'X-Workflow-Key: YOUR-TOKEN' -d '{"request_id":"meeting_123","transcript":"Alice: Bob, please finish the report by Friday."}'
 
-These exports target self-hosted n8n. n8n Cloud may block `$env` access inside Code nodes; verify compatibility before importing there.
+## If something fails
+
+n8n logs the time, run ID, and result; Failure Alert emails ACTIONFLOW_ALERT_EMAIL_TO. An accepted webhook means only that the meeting row was saved. If action rows or email fail, check the execution, both tabs, and Gmail Sent before repairing the missing work by hand. A rerun with the same request_id stops at the meeting row and will not repair later steps. Do not retry Gmail after an uncertain timeout without checking Sent.
+
+The workflow has a 300 second run limit and a 30 second AI timeout. Sheet and Gmail writes are not retried after an uncertain result. Sheets lookup and upsert do not enforce unique keys across simultaneous requests. If n8n is offline, the caller must retry later using the same request_id. Monitor n8n from outside because its own alert cannot report an outage.
+
+Review the owner, inbox, sheet, and meeting process every quarter. Retire the workflow when that process ends. Test with real account connections before routing meetings to it.
+
+
+## Go-live check
+
+- [ ] Dry run was tested; it touched no live account.
+- [ ] Secrets are in n8n credentials, and required environment settings are present.
+- [ ] The same item was run twice in a test account with no duplicate side effect.
+- [ ] Timeouts and retry limits were checked; uncertain Gmail or Sheets writes are reviewed by a person.
+- [ ] Failure Alert reaches the named operator, and an outside monitor covers n8n outages.
+- [ ] The operator knows how to set ACTIONFLOW_ENABLED=false and deactivate the workflow.\n
