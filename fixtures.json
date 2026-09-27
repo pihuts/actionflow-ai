@@ -1,0 +1,18 @@
+{
+  "valid": {
+    "body": {
+      "request_id": "meeting_123",
+      "transcript": "Alice: Bob, please finish the report by Friday.",
+      "meeting_title": "Team sync"
+    }
+  },
+  "empty": {
+    "body": {}
+  },
+  "already_done": {
+    "Meeting ID": "MTG-meeting_123"
+  },
+  "network_down": {
+    "error": "ECONNRESET"
+  }
+}

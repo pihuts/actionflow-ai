@@ -6,7 +6,10 @@
       "id": "meeting-sticky",
       "name": "Sticky Note",
       "type": "n8n-nodes-base.stickyNote",
-      "position": [0, -500],
+      "position": [
+        -400,
+        -500
+      ],
       "parameters": {
         "width": 820,
         "height": 240,
@@ -18,12 +21,16 @@
       "id": "meeting-webhook",
       "name": "Receive Meeting Transcript",
       "type": "n8n-nodes-base.webhook",
-      "position": [-200, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {
         "httpMethod": "POST",
         "path": "actionflow-meeting-notes",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {},
+        "authentication": "headerAuth"
       },
       "typeVersion": 2
     },
@@ -31,9 +38,12 @@
       "id": "meeting-validate",
       "name": "Validate Input",
       "type": "n8n-nodes-base.code",
-      "position": [0, 0],
+      "position": [
+        240,
+        0
+      ],
       "parameters": {
-        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst transcript = body.transcript || body.text || '';\nif (!transcript || transcript.trim().length < 20) {\n  throw new Error('A meeting transcript of at least 20 characters is required.');\n}\nconst attendees = Array.isArray(body.attendees)\n  ? body.attendees.map(String).join(', ')\n  : String(body.attendees || body.attendee_list || '');\nreturn [{\n  json: {\n    transcript: transcript.trim(),\n    meetingTitle: body.meeting_title || body.title || 'Untitled meeting',\n    organizer: body.organizer || '',\n    meetingDate: body.meeting_date || new Date().toISOString().slice(0, 10),\n    attendees,\n    receivedAt: new Date().toISOString(),\n    meetingId: 'MTG-' + Date.now().toString(36).toUpperCase()\n  }\n}];"
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst transcript = String(body.transcript || body.text || '').trim();\nconst requestId = String(body.request_id || '').trim();\nif (transcript.length < 20 || transcript.length > 100000) return [{json:{invalid:true,error:'Transcript must be 20-100000 characters'}}];\nif (!/^[A-Za-z0-9_-]{8,100}$/.test(requestId)) return [{json:{invalid:true,error:'request_id must be 8-100 safe characters'}}];\nconst attendees = Array.isArray(body.attendees) ? body.attendees.map(String).join(', ') : String(body.attendees || '');\nreturn [{json: {transcript, requestId, meetingId: 'MTG-' + requestId, meetingTitle: String(body.meeting_title || body.title || 'Untitled meeting'),\n  organizer: String(body.organizer || ''), meetingDate: String(body.meeting_date || new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Manila', year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date())),\n  attendees, receivedAt: new Date().toISOString()}}];"
       },
       "typeVersion": 2
     },
@@ -41,7 +51,10 @@
       "id": "meeting-model",
       "name": "OpenAI Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
-      "position": [200, -240],
+      "position": [
+        2640,
+        320
+      ],
       "parameters": {
         "model": {
           "__rl": true,
@@ -49,7 +62,8 @@
           "value": "gpt-5.6-terra"
         },
         "options": {
-          "temperature": 0.1
+          "temperature": 0.1,
+          "timeout": 30000
         }
       },
       "typeVersion": 1.2
@@ -58,7 +72,10 @@
       "id": "meeting-parser",
       "name": "Structured Output Parser",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
-      "position": [400, -240],
+      "position": [
+        2640,
+        560
+      ],
       "parameters": {
         "schemaType": "manual",
         "inputSchema": "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"key_decisions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"action_items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"owner\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"due_date\":{\"type\":[\"string\",\"null\"]},\"priority\":{\"type\":\"string\",\"enum\":[\"low\",\"medium\",\"high\",\"urgent\"]}},\"required\":[\"owner\",\"task\",\"priority\"]}},\"risks\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"suggested_followup\":{\"type\":[\"object\",\"null\"],\"properties\":{\"title\":{\"type\":\"string\"},\"suggested_date\":{\"type\":[\"string\",\"null\"]},\"attendees\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}},\"required\":[\"summary\",\"key_decisions\",\"action_items\",\"risks\",\"suggested_followup\"]}"
@@ -69,7 +86,10 @@
       "id": "meeting-chain",
       "name": "Analyze Meeting",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [200, 0],
+      "position": [
+        2640,
+        0
+      ],
       "parameters": {
         "text": "=MEETING: {{ $json.meetingTitle }}\nDATE: {{ $json.meetingDate }}\nORGANIZER: {{ $json.organizer }}\nATTENDEES: {{ $json.attendees }}\n\nTRANSCRIPT:\n{{ $json.transcript }}",
         "messages": {
@@ -88,9 +108,12 @@
       "id": "meeting-normalize",
       "name": "Normalize Meeting Output",
       "type": "n8n-nodes-base.code",
-      "position": [400, 0],
+      "position": [
+        2880,
+        0
+      ],
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst raw = item.output || item;\nconst str = (v) => v === null || v === undefined ? '' : String(v);\nconst list = (v) => Array.isArray(v) ? v.map(str).join(' | ') : str(v);\nconst actionItems = Array.isArray(raw.action_items) ? raw.action_items.map((a) => ({\n  owner: str(a.owner),\n  task: str(a.task),\n  due_date: str(a.due_date),\n  priority: str(a.priority) || 'medium'\n})) : [];\nreturn [{\n  json: {\n    ...item,\n    summary: str(raw.summary),\n    key_decisions: list(raw.key_decisions),\n    risks: list(raw.risks),\n    action_items: actionItems,\n    actionItemsText: actionItems.map((a) => `${a.owner}: ${a.task} (${a.priority}, due ${a.due_date || 'TBD'})`).join('\\n'),\n    suggested_followup: JSON.stringify(raw.suggested_followup || {})\n  }\n}];"
+        "jsCode": "const item = $input.first().json;\nconst raw = item.output || item;\nconst source = $('Validate Input').first().json;\nconst str = (v) => v === null || v === undefined ? '' : String(v);\nconst list = (v) => Array.isArray(v) ? v.map(str).join(' | ') : str(v);\nconst actionItems = Array.isArray(raw.action_items) ? raw.action_items.map((a) => ({\n  owner: str(a.owner),\n  task: str(a.task),\n  due_date: str(a.due_date),\n  priority: str(a.priority) || 'medium'\n})) : [];\nreturn [{\n  json: {\n    ...source, runId: String($execution.id),\n    summary: str(raw.summary),\n    key_decisions: list(raw.key_decisions),\n    risks: list(raw.risks),\n    action_items: actionItems,\n    actionItemsText: actionItems.map((a) => `${a.owner}: ${a.task} (${a.priority}, due ${a.due_date || 'TBD'})`).join('\\n'),\n    suggested_followup: JSON.stringify(raw.suggested_followup || {})\n  }\n}];"
       },
       "typeVersion": 2
     },
@@ -98,10 +121,13 @@
       "id": "meeting-respond",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
-      "position": [600, -160],
+      "position": [
+        4320,
+        0
+      ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, meetingId: $json.meetingId, summary: $json.summary, actionItems: $json.action_items }) }}"
+        "responseBody": "={{ ({status:'accepted', meetingId: $('Normalize Meeting Output').first().json.meetingId, summary: $('Normalize Meeting Output').first().json.summary, actionItems: $('Normalize Meeting Output').first().json.action_items}) }}"
       },
       "typeVersion": 1.1
     },
@@ -109,9 +135,12 @@
       "id": "meeting-summary-sheet",
       "name": "Log Meeting Summary",
       "type": "n8n-nodes-base.googleSheets",
-      "position": [600, -40],
+      "position": [
+        3120,
+        0
+      ],
       "parameters": {
-        "operation": "append",
+        "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
           "value": "={{ $env.MEETING_SHEET_ID }}",
@@ -134,8 +163,12 @@
             "Key Decisions": "={{ $json.key_decisions }}",
             "Risks": "={{ $json.risks }}",
             "Suggested Follow-up": "={{ $json.suggested_followup }}",
-            "Received At": "={{ $json.receivedAt }}"
-          }
+            "Received At": "={{ $json.receivedAt }}",
+            "Run ID": "={{ $json.runId }}"
+          },
+          "matchingColumns": [
+            "Meeting ID"
+          ]
         },
         "options": {}
       },
@@ -145,10 +178,14 @@
       "id": "meeting-split",
       "name": "Split Action Items",
       "type": "n8n-nodes-base.splitOut",
-      "position": [600, 80],
+      "position": [
+        3840,
+        0
+      ],
       "parameters": {
         "options": {},
-        "fieldToSplitOut": "action_items"
+        "fieldToSplitOut": "action_items",
+        "include": "allOtherFields"
       },
       "typeVersion": 1
     },
@@ -156,9 +193,12 @@
       "id": "meeting-action-sheet",
       "name": "Log Action Items",
       "type": "n8n-nodes-base.googleSheets",
-      "position": [800, 80],
+      "position": [
+        4560,
+        0
+      ],
       "parameters": {
-        "operation": "append",
+        "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
           "value": "={{ $env.MEETING_SHEET_ID }}",
@@ -178,8 +218,12 @@
             "Task": "={{ $json.task }}",
             "Due Date": "={{ $json.due_date }}",
             "Priority": "={{ $json.priority }}",
-            "Status": "=Open"
-          }
+            "Status": "=Open",
+            "Action Key": "={{ $json.meetingId + '|' + $json.task.toLowerCase().trim() }}"
+          },
+          "matchingColumns": [
+            "Action Key"
+          ]
         },
         "options": {}
       },
@@ -189,14 +233,275 @@
       "id": "meeting-email",
       "name": "Email Action Items",
       "type": "n8n-nodes-base.gmail",
-      "position": [600, 200],
+      "position": [
+        4080,
+        0
+      ],
       "parameters": {
         "sendTo": "={{ $env.MEETING_EMAIL_TO || 'team@example.com' }}",
-        "subject": "=Action items: {{ $json.meetingTitle }}",
-        "message": "={{ $json.summary }}\n\nDECISIONS:\n{{ $json.key_decisions }}\n\nACTION ITEMS:\n{{ $json.actionItemsText }}\n\nRISKS:\n{{ $json.risks }}",
+        "subject": "=Action items: {{ $('Normalize Meeting Output').first().json.meetingTitle }}",
+        "message": "={{ $('Normalize Meeting Output').first().json.summary }}\n\nDECISIONS:\n{{ $('Normalize Meeting Output').first().json.key_decisions }}\n\nACTION ITEMS:\n{{ $('Normalize Meeting Output').first().json.actionItemsText }}\n\nRISKS:\n{{ $('Normalize Meeting Output').first().json.risks }}",
         "options": {}
       },
       "typeVersion": 2.1
+    },
+    {
+      "id": "preflight",
+      "name": "Preflight",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const env = $env;\nconst enabled = env.ACTIONFLOW_ENABLED === 'true';\nconst dryRun = env.ACTIONFLOW_DRY_RUN !== 'false';\nconst required = [\"MEETING_SHEET_ID\", \"MEETING_EMAIL_TO\", \"ACTIONFLOW_ALERT_EMAIL_TO\"];\nif (enabled && !dryRun) {\n  const missing = required.filter(key => !String(env[key] || '').trim());\n  if (missing.length) throw new Error('Missing configuration: ' + missing.join(', '));\n}\nconst runId = String($execution.id);\nconst status = !enabled ? 'disabled' : dryRun ? 'dry_run' : 'running';\nconsole.log(JSON.stringify({timestamp: new Date().toISOString(), runId, workflow: 'ACTIONFLOW', status}));\nconst first = $input.first();\nreturn [{json: {...first.json, runId, status, runLive: status === 'running'}, ...(first.binary ? {binary: first.binary} : {})}];"
+      }
+    },
+    {
+      "id": "run-live?",
+      "name": "Run live?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "live-run",
+              "leftValue": "={{ $json.runLive }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond-without-running",
+      "name": "Respond without running",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({ status: $json.status, runId: $json.runId }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "valid-input?",
+      "name": "Valid input?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "valid-input",
+              "leftValue": "={{ $json.invalid === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond-invalid-input",
+      "name": "Respond invalid input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({status:'invalid_request', error:$json.error}) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "find-existing-meetings",
+      "name": "Find existing meetings",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MEETING_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Meetings",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Meeting ID",
+              "lookupValue": "={{ $('Validate Input').first().json.meetingId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "new-meetings?",
+      "name": "New meetings?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "new-record",
+              "leftValue": "={{ !$json['Meeting ID'] }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "restore-input-for-meetings",
+      "name": "Restore input for meetings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json: $('Validate Input').first().json}];"
+      }
+    },
+    {
+      "id": "respond-already-recorded",
+      "name": "Respond already recorded",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({status:'already_recorded', runId: String($execution.id)}) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "restore-normalize-meeting-output",
+      "name": "Restore Normalize Meeting Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json: $('Normalize Meeting Output').item.json}];"
+      }
+    },
+    {
+      "id": "audit-log-meeting-summary",
+      "name": "Audit log meeting summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ],
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({timestamp:new Date().toISOString(), runId:String($execution.id), result:'recorded', action:'Log Meeting Summary'})); return $input.all();"
+      }
+    },
+    {
+      "id": "audit-log-action-items",
+      "name": "Audit log action items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ],
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({timestamp:new Date().toISOString(), runId:String($execution.id), result:'recorded', action:'Log Action Items'})); return $input.all();"
+      }
+    },
+    {
+      "id": "audit-email-action-items",
+      "name": "Audit email action items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4800,
+        0
+      ],
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({timestamp:new Date().toISOString(), runId:String($execution.id), result:'sent', action:'Email Action Items'})); return $input.all();"
+      }
     }
   ],
   "connections": {
@@ -215,7 +520,7 @@
       "main": [
         [
           {
-            "node": "Analyze Meeting",
+            "node": "Valid input?",
             "type": "main",
             "index": 0
           }
@@ -259,22 +564,7 @@
       "main": [
         [
           {
-            "node": "Respond to Webhook",
-            "type": "main",
-            "index": 0
-          },
-          {
             "node": "Log Meeting Summary",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Split Action Items",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Email Action Items",
             "type": "main",
             "index": 0
           }
@@ -291,12 +581,169 @@
           }
         ]
       ]
+    },
+    "Preflight": {
+      "main": [
+        [
+          {
+            "node": "Run live?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run live?": {
+      "main": [
+        [
+          {
+            "node": "Find existing meetings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond without running",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid input?": {
+      "main": [
+        [
+          {
+            "node": "Preflight",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond invalid input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find existing meetings": {
+      "main": [
+        [
+          {
+            "node": "New meetings?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New meetings?": {
+      "main": [
+        [
+          {
+            "node": "Restore input for meetings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond already recorded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore input for meetings": {
+      "main": [
+        [
+          {
+            "node": "Analyze Meeting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Meeting Summary": {
+      "main": [
+        [
+          {
+            "node": "Audit log meeting summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Normalize Meeting Output": {
+      "main": [
+        [
+          {
+            "node": "Split Action Items",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Action Items",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit log meeting summary": {
+      "main": [
+        [
+          {
+            "node": "Restore Normalize Meeting Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Action Items": {
+      "main": [
+        [
+          {
+            "node": "Audit log action items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Action Items": {
+      "main": [
+        [
+          {
+            "node": "Audit email action items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
   "pinData": {},
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "executionTimeout": 300,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true
   },
   "versionId": "v1-actionflow-ai",
   "tags": [],
